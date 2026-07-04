@@ -1,4 +1,4 @@
-import { AgentClient, EventType, DeliverableType } from '@croo-network/sdk';
+import { AgentClient, EventType, DeliverableType, NegotiationStatus, OrderStatus } from '@croo-network/sdk';
 import { config, assertProviderReady } from './config.js';
 import { verifyContent } from './verify.js';
 
@@ -21,13 +21,108 @@ function parseRequirements(requirements) {
   if (!raw) return { content: '', kind: 'text' };
   try {
     const obj = JSON.parse(raw);
-    if (obj && typeof obj === 'object' && 'content' in obj) {
-      return { content: String(obj.content), kind: obj.kind || 'text' };
+    if (obj && typeof obj === 'object') {
+      // Accept several key names: our own `content`, the CROO store UI's `text`,
+      // and a generic `input`. Whichever is present wins.
+      const value = obj.content ?? obj.text ?? obj.input;
+      if (value != null) return { content: String(value), kind: obj.kind || 'text' };
     }
   } catch {
     /* not JSON — treat as raw text */
   }
   return { content: raw, kind: 'text' };
+}
+
+/** Accept a pending negotiation (validating content), caching parsed content. */
+async function acceptNegotiation(client, negotiationId, contentByOrder) {
+  const negotiation = await client.getNegotiation(negotiationId);
+  if (negotiation.status !== NegotiationStatus.Pending) return; // already handled
+  const parsed = parseRequirements(negotiation.requirements);
+
+  if (!parsed.content || parsed.content.length < config.minContentLength) {
+    await client.rejectNegotiation(
+      negotiationId,
+      `Content required, minimum ${config.minContentLength} chars.`
+    );
+    console.log(`[GhostWriter] rejected negotiation ${negotiationId} (insufficient content)`);
+    return;
+  }
+
+  const result = await client.acceptNegotiation(negotiationId);
+  contentByOrder.set(result.order.orderId, parsed);
+  console.log(`[GhostWriter] accepted -> order ${result.order.orderId}`);
+}
+
+/** Run the check and deliver a paid order. Idempotent: skips if already delivered. */
+async function fulfillOrder(client, orderId, contentByOrder) {
+  // Don't re-deliver an order that already has a delivery.
+  const existing = await client.getDelivery(orderId).catch(() => null);
+  if (existing && existing.deliverableText) {
+    contentByOrder.delete(orderId);
+    return;
+  }
+
+  const order = await client.getOrder(orderId);
+  let parsed = contentByOrder.get(orderId);
+  if (!parsed) {
+    const negotiation = await client.getNegotiation(order.negotiationId);
+    parsed = parseRequirements(negotiation.requirements);
+  }
+
+  console.log(`[GhostWriter] order ${orderId} paid — running check…`);
+  const result = await verifyContent(parsed.content, {
+    kind: parsed.kind,
+    subject: order.requesterWalletAddress,
+  });
+
+  const deliverable = {
+    unique: result.unique,
+    score: result.score,
+    contentHash: result.contentHash,
+    attestationTx: result.attestationTx,
+    attestation: result.attestation,
+    summary: result.report.reportSummary,
+    sources: result.report.sources,
+  };
+
+  await client.deliverOrder(orderId, {
+    deliverableType: DeliverableType.Text,
+    deliverableText: JSON.stringify(deliverable),
+  });
+  contentByOrder.delete(orderId);
+  console.log(
+    `[GhostWriter] delivered order ${orderId} — score ${result.score}, unique=${result.unique}`
+  );
+}
+
+/**
+ * Startup reconciliation: catch up on anything that arrived while the provider
+ * was offline — accept still-pending negotiations, and fulfill paid-but-
+ * undelivered orders. Makes the provider safe to restart at any time.
+ */
+async function reconcile(client, contentByOrder) {
+  try {
+    const negs = await client.listNegotiations({ role: 'provider', pageSize: 50 });
+    const pending = negs.filter((n) => n.status === NegotiationStatus.Pending);
+    for (const n of pending) {
+      await acceptNegotiation(client, n.negotiationId, contentByOrder).catch((e) =>
+        console.error('[GhostWriter] reconcile accept error:', e.message || e)
+      );
+    }
+
+    const orders = await client.listOrders({ role: 'provider', pageSize: 50 });
+    const paid = orders.filter((o) => o.status === OrderStatus.Paid);
+    for (const o of paid) {
+      await fulfillOrder(client, o.orderId, contentByOrder).catch((e) =>
+        console.error('[GhostWriter] reconcile fulfill error:', e.message || e)
+      );
+    }
+    if (pending.length || paid.length) {
+      console.log(`[GhostWriter] reconciled ${pending.length} negotiation(s), ${paid.length} paid order(s).`);
+    }
+  } catch (err) {
+    console.error('[GhostWriter] reconcile sweep failed:', err.message || err);
+  }
 }
 
 export async function startAgent() {
@@ -41,68 +136,24 @@ export async function startAgent() {
   const stream = await client.connectWebSocket();
   console.log('[GhostWriter] connected to CAP. Listening for orders…');
 
-  // Cache negotiation requirements by negotiation_id so we still have the
-  // content at OrderPaid time.
+  // Cache parsed content by orderId so we still have it at OrderPaid time.
   const contentByOrder = new Map();
 
-  stream.on(EventType.NegotiationCreated, async (e) => {
-    try {
-      const negotiation = await client.getNegotiation(e.negotiation_id);
-      const parsed = parseRequirements(negotiation.requirements);
+  // Catch up on anything missed while offline, then keep it fresh periodically
+  // (covers events dropped during transient WS reconnects).
+  await reconcile(client, contentByOrder);
+  const sweep = setInterval(() => reconcile(client, contentByOrder), 60_000);
+  if (sweep.unref) sweep.unref();
 
-      if (!parsed.content || parsed.content.length < config.minContentLength) {
-        await client.rejectNegotiation(
-          e.negotiation_id,
-          `Content required, minimum ${config.minContentLength} chars.`
-        );
-        console.log(`[GhostWriter] rejected negotiation ${e.negotiation_id} (insufficient content)`);
-        return;
-      }
-
-      const result = await client.acceptNegotiation(e.negotiation_id);
-      contentByOrder.set(result.order.orderId, parsed);
-      console.log(`[GhostWriter] accepted -> order ${result.order.orderId}`);
-    } catch (err) {
-      console.error('[GhostWriter] negotiation error:', err.message || err);
-    }
-  });
+  stream.on(EventType.NegotiationCreated, (e) =>
+    acceptNegotiation(client, e.negotiation_id, contentByOrder).catch((err) =>
+      console.error('[GhostWriter] negotiation error:', err.message || err)
+    )
+  );
 
   stream.on(EventType.OrderPaid, async (e) => {
     try {
-      let parsed = contentByOrder.get(e.order_id);
-      if (!parsed) {
-        // Recover content from the order's negotiation if we lost the cache.
-        const order = await client.getOrder(e.order_id);
-        const negotiation = await client.getNegotiation(order.negotiationId);
-        parsed = parseRequirements(negotiation.requirements);
-      }
-
-      const order = await client.getOrder(e.order_id);
-      console.log(`[GhostWriter] order ${e.order_id} paid — running check…`);
-
-      const result = await verifyContent(parsed.content, {
-        kind: parsed.kind,
-        subject: order.requesterWalletAddress,
-      });
-
-      const deliverable = {
-        unique: result.unique,
-        score: result.score,
-        contentHash: result.contentHash,
-        attestationTx: result.attestationTx,
-        attestation: result.attestation,
-        summary: result.report.reportSummary,
-        sources: result.report.sources,
-      };
-
-      await client.deliverOrder(e.order_id, {
-        deliverableType: DeliverableType.Text,
-        deliverableText: JSON.stringify(deliverable),
-      });
-      contentByOrder.delete(e.order_id);
-      console.log(
-        `[GhostWriter] delivered order ${e.order_id} — score ${result.score}, unique=${result.unique}`
-      );
+      await fulfillOrder(client, e.order_id, contentByOrder);
     } catch (err) {
       console.error('[GhostWriter] delivery error:', err.message || err);
       try {
