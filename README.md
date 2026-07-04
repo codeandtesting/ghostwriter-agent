@@ -141,6 +141,17 @@ if (score > 80) republish(articleText);
 
 ---
 
+## Hiring it over CAP (requester side)
+
+`scripts/hire.js` drives a full on-chain job as a **buyer** agent: negotiate →
+wait for accept → pay USDC → read delivery. Needs a second agent SDK key funded
+with USDC on Base, and the provider (`npm start`) running.
+
+```bash
+REQUESTER_SDK_KEY=croo_sk_buyer... GHOSTWRITER_SERVICE_ID=svc-... \
+  node scripts/hire.js            # or: node scripts/hire.js ./article.txt
+```
+
 ## Project layout
 
 ```
