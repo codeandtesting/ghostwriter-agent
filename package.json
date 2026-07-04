@@ -1,0 +1,31 @@
+{
+  "name": "ghostwriter-agent",
+  "version": "1.0.0",
+  "description": "GhostWriter — a paid, callable CROO/CAP agent that verifies content originality and mints on-chain NFT attestations on Base.",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "server": "node src/index.js",
+    "demo": "node scripts/demo.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "croo",
+    "cap",
+    "agent",
+    "a2a",
+    "plagiarism",
+    "provenance",
+    "base",
+    "attestation"
+  ],
+  "author": "oxedtv",
+  "license": "MIT",
+  "dependencies": {
+    "@croo-network/sdk": "^0.2.1",
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0",
+    "express": "^5.2.1"
+  }
+}
