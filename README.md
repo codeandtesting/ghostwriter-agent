@@ -2,11 +2,12 @@
 
 A paid, callable **CROO/CAP agent** that verifies content originality and mints an
 **on-chain NFT attestation** on **Base**. Any human or agent can hire GhostWriter to
-answer one question with cryptographic proof: *is this content original?*
+answer one question with cryptographic proof: *is this content original — and can I prove it?*
 
 - **Track:** Data & Verification Agents (provenance, credentials, output checks)
 - **Settlement:** USDC on Base, via the CROO Agent Protocol (CAP)
-- **Proof:** ERC-721 attestation binding a content SHA-256 hash → uniqueness score + timestamp + sources
+- **Proof:** ERC-721 attestation binding a normalized content hash → uniqueness score + timestamp + sources
+- **Live contract:** [`0xA4d41cb5975CBD984BF328A14b67866dA95c7f00`](https://basescan.org/address/0xA4d41cb5975CBD984BF328A14b67866dA95c7f00) on Base
 
 > Built for the CROO Agent Hackathon. Turns *"trust but verify"* into *"verify, then mint proof."*
 
@@ -18,26 +19,55 @@ In the age of AI-generated content there is no verifiable, on-chain proof that a
 of work is original. News aggregators, publishers, and agents have no automated way to
 check authenticity before republishing or paying for content. GhostWriter is that
 missing primitive — and because it speaks CAP, **other agents can hire it as a
-dependency** (e.g. a news-aggregator agent that only republishes content scoring > 80).
+dependency** (e.g. a news-aggregator agent that only republishes content scoring > 80,
+then verifies the certificate is real before trusting it).
 
 ---
 
-## Architecture
+## Services (composable on the CROO Agent Store)
 
-```
-CROO Agent Store  ── discovery / listing / payments (USDC on Base)
-        │
-        ▼
-GhostWriter Agent
- ├─ CAP provider (src/agent.js)        negotiate → accept → paid → deliver on-chain
- ├─ Plagiarism engine (src/plagiarism) probe extraction + web search + similarity
- ├─ Attestation minter (src/attestation) SHA-256 → ERC-721 on Base (or signed off-chain)
- └─ REST API (src/server.js)           /api/verify + /api/verify/batch for direct A2A
-```
+GhostWriter exposes a full **issue → verify** loop as priced, callable services:
 
-Design principle: **graceful degradation.** Missing `SERPAPI_KEY` → offline structural
-heuristic. Missing minter keys → signed off-chain attestation. So the full flow is
-runnable in CI / on a reviewer's laptop with **zero external accounts**.
+| Service | Price | What it does |
+| --- | --- | --- |
+| **Content Originality Check** | $0.10 | Web-checks content, scores 0–100, **mints an NFT certificate** to the buyer |
+| **Certificate Lookup** | $0.05 | Reads the chain to confirm whether content is **already certified** (no gas, no mint) |
+| **Bulk Verification** | tiered | Many items in one order → per-item scores + one batch attestation NFT |
+
+Each is a real CAP order settled in USDC on Base. Service 1 *issues* proof; Service 2
+lets any other agent *verify* that proof before trusting it — that's the A2A story.
+
+---
+
+## How it works
+
+1. **Input:** raw text, a JSON envelope (`{"content"|"text"|"input": "..."}`), or a **URL**
+   (the page is fetched and its readable text extracted). Lookup also accepts a `0x` content hash.
+2. **Originality engine:** extracts distinctive probe sentences, cross-checks them against
+   the web (SerpAPI), and combines that with a lexical-diversity + char-shingle heuristic
+   into a 0–100 score with source links.
+3. **Attestation:** hashes a **normalized** form of the content (Unicode NFC + collapsed
+   whitespace) so the same article reliably matches despite formatting differences, then
+   mints an ERC-721 on Base bound to that hash, score, timestamp, and sources.
+4. **Verify:** anyone hashes content (or calls the lookup service / `verify(hash)`) to
+   confirm on-chain whether GhostWriter certified it. Certificates can't be forged — only
+   the minter wallet can issue them.
+
+Design principle: **graceful degradation.** No `SERPAPI_KEY` → offline heuristic. No
+minter keys → signed off-chain attestation. So the full flow runs in CI / on a
+reviewer's laptop with **zero external accounts**.
+
+---
+
+## Live proof (real completed jobs on Base)
+
+- A buyer paid **$1 USDC** and GhostWriter delivered a signed originality result on-chain
+  ([deliver tx](https://basescan.org/tx/0x27a5954e97e16eded416000a33258e815d37e7168ccaddb83ea0fd2d2ae7ace6)).
+- The hosted agent later minted a real **ERC-721 certificate to the buyer's wallet** —
+  token #3, [mint tx](https://basescan.org/tx/0xfc4e27e992bf4c86de950da3035a65249155345f3fdc38387862c8b01fd2213d).
+- Anyone can verify a certificate on-chain: on
+  [BaseScan → Read Contract](https://basescan.org/address/0xA4d41cb5975CBD984BF328A14b67866dA95c7f00#readContract),
+  call `verify(bytes32 contentHash)` → returns `(exists, score, tokenId)`.
 
 ---
 
@@ -45,54 +75,58 @@ runnable in CI / on a reviewer's laptop with **zero external accounts**.
 
 ```bash
 npm install
-cp .env.example .env        # fill in what you have (all optional except CROO_SDK_KEY for CAP)
+cp .env.example .env        # add CROO_SDK_KEY (+ optional SERPAPI_KEY / minter keys)
 
-# 1) Offline end-to-end demo (no keys needed) — shows scoring + attestation
-npm run demo
-
-# 2) Unit tests
-npm test
-
-# 3) Run the agent (REST always; CAP provider when CROO_SDK_KEY is set)
-npm start
+npm run demo               # offline end-to-end demo, no keys needed
+npm test                   # unit tests
+npm start                  # REST API always; CAP provider when CROO_SDK_KEY is set
 ```
 
-### Try the REST API
+### REST API
 
 ```bash
+# Verify content (or a URL)
 curl -X POST http://localhost:8787/api/verify \
   -H "Content-Type: application/json" \
-  -d '{"content":"<at least 200 chars of text>","subject":"0xYourWallet"}'
+  -d '{"content":"<article text>","subject":"0xBuyerWallet"}'
+# or: -d '{"url":"https://example.com/article"}'
+
+# Look up whether content is already certified
+curl -X POST http://localhost:8787/api/lookup \
+  -H "Content-Type: application/json" \
+  -d '{"content":"<same article text>"}'
 ```
 
-Response:
+Verify response:
 
 ```json
 {
   "ok": true,
-  "unique": true,
-  "score": 94,
+  "unique": false,
+  "score": 71,
   "contentHash": "0x…",
   "attestationTx": "0x…",
-  "summary": "No matching sources found across the web. Content appears original (94/100).",
-  "sources": []
+  "summary": "Found 1 potentially overlapping source(s); strongest match 0.25. Uniqueness 71/100.",
+  "sources": [{ "title": "…", "link": "https://…", "overlap": 0.25 }]
 }
 ```
-
-Batch: `POST /api/verify/batch { "items": ["…","…"], "format": "csv" }` → CSV report.
 
 ---
 
 ## CAP integration
 
-The agent is a CAP **provider**. Content to verify is carried in the negotiation's
-`requirements` string — either raw text or `{"content":"…","kind":"text"}`.
+The agent is a CAP **provider**. Input is carried in the negotiation's `requirements`.
+Orders are routed by service id: lookup → on-chain read; bulk → batch; otherwise → the
+originality check.
 
 Lifecycle (`src/agent.js`):
 
-1. `EventType.NegotiationCreated` → validate content → `acceptNegotiation()` (backend creates the on-chain order).
-2. `EventType.OrderPaid` (buyer paid USDC) → run originality check → mint attestation → `deliverOrder()` with the JSON result on-chain.
+1. `EventType.NegotiationCreated` → validate/resolve input → `acceptNegotiation()`.
+2. `EventType.OrderPaid` → run the service → mint (if applicable) → `deliverOrder()` on-chain.
 3. `EventType.OrderCompleted` → done.
+
+A startup **reconciliation sweep** (and 60s interval) catches up on any negotiation or
+paid order missed while the provider was offline, so it's safe to restart anytime.
 
 ### CAP SDK methods used (`@croo-network/sdk`)
 
@@ -100,15 +134,14 @@ Lifecycle (`src/agent.js`):
 | --- | --- |
 | `new AgentClient({ baseURL, wsURL, rpcURL }, sdkKey)` | Construct the provider client |
 | `connectWebSocket()` | Open the event stream (`EventStream`) |
-| `stream.on(EventType.NegotiationCreated, …)` | React to incoming hire requests |
-| `getNegotiation(id)` | Read the buyer's `requirements` (the content) |
-| `acceptNegotiation(id)` / `rejectNegotiation(id, reason)` | Accept/decline the job |
-| `stream.on(EventType.OrderPaid, …)` | Trigger work after USDC settlement |
-| `getOrder(id)` | Read buyer wallet + order state |
-| `deliverOrder(id, { deliverableType: DeliverableType.Text, deliverableText })` | Deliver result on-chain |
-| `rejectOrder(id, reason)` | Fail gracefully on error |
+| `stream.on(EventType.NegotiationCreated / OrderPaid / OrderCompleted, …)` | Lifecycle handlers |
+| `getNegotiation`, `listNegotiations` | Read requirements / reconciliation |
+| `acceptNegotiation`, `rejectNegotiation` | Accept/decline a job |
+| `getOrder`, `listOrders` | Order state / reconciliation |
+| `deliverOrder(id, { deliverableType: DeliverableType.Text, deliverableText })` | Deliver on-chain |
+| `getDelivery`, `rejectOrder` | Delivery + failure paths |
 
-Enums used: `EventType`, `DeliverableType`, `OrderStatus`, `NegotiationStatus`.
+Enums: `EventType`, `DeliverableType`, `OrderStatus`, `NegotiationStatus`.
 
 ---
 
@@ -116,10 +149,10 @@ Enums used: `EventType`, `DeliverableType`, `OrderStatus`, `NegotiationStatus`.
 
 `contracts/GhostWriterAttestation.sol` is a minimal, dependency-free ERC-721. Each token
 records `{ contentHash, uniquenessScore, sourcesChecked, timestamp, subject }` and exposes
-`verify(bytes32 contentHash) → (exists, score, tokenId)` so anyone can confirm a proof
-by hash. Deploy on Base, set `ATTESTATION_CONTRACT` + `MINTER_PRIVATE_KEY`, and
-`src/attestation/minter.js` mints real tokens; otherwise it returns a signed off-chain
-attestation.
+`verify(bytes32 contentHash) → (exists, score, tokenId)` so anyone can confirm a proof by
+hash. Deploy with `node scripts/deploy-contract.js` (needs `DEPLOYER_PRIVATE_KEY`), then
+set `ATTESTATION_CONTRACT` + `MINTER_PRIVATE_KEY` to mint real tokens; otherwise the agent
+returns a signed off-chain attestation.
 
 ---
 
@@ -129,49 +162,51 @@ attestation.
 import { AgentClient } from '@croo-network/sdk';
 const client = new AgentClient({ baseURL, wsURL }, MY_SDK_KEY);
 
-const negotiation = await client.negotiateOrder({
-  serviceId: GHOSTWRITER_SERVICE_ID,
-  requirements: JSON.stringify({ content: articleText, kind: 'text' }),
+// 1) Certify
+const neg = await client.negotiateOrder({
+  serviceId: ORIGINALITY_SERVICE_ID,
+  requirements: JSON.stringify({ content: articleText }), // or { url: '…' }
 });
-// pay the resulting order, then read the delivery:
-const delivery = await client.getDelivery(orderId);
-const { unique, score, attestationTx } = JSON.parse(delivery.deliverableText);
-if (score > 80) republish(articleText);
+// pay the order, then:
+const { score, contentHash, attestationTx } = JSON.parse((await client.getDelivery(orderId)).deliverableText);
+
+// 2) Later, a different agent verifies the certificate before republishing
+const neg2 = await client.negotiateOrder({
+  serviceId: LOOKUP_SERVICE_ID,
+  requirements: articleText, // or the 0x contentHash
+});
+const { certified, tokenId } = JSON.parse((await client.getDelivery(orderId2)).deliverableText);
+if (certified) republish(articleText);
 ```
+
+`scripts/hire.js` drives a full buyer-side job end-to-end (negotiate → pay → read delivery).
 
 ---
-
-## Hiring it over CAP (requester side)
-
-`scripts/hire.js` drives a full on-chain job as a **buyer** agent: negotiate →
-wait for accept → pay USDC → read delivery. Needs a second agent SDK key funded
-with USDC on Base, and the provider (`npm start`) running.
-
-```bash
-REQUESTER_SDK_KEY=croo_sk_buyer... GHOSTWRITER_SERVICE_ID=svc-... \
-  node scripts/hire.js            # or: node scripts/hire.js ./article.txt
-```
 
 ## Project layout
 
 ```
 src/
   index.js               entrypoint (REST + CAP)
-  config.js              env + policy
-  agent.js               CAP provider event loop
-  server.js              REST API (/api/verify, /api/verify/batch)
-  verify.js              shared pipeline (check → mint)
-  plagiarism/
-    engine.js            orchestration + scoring + SHA-256
-    websearch.js         probe extraction + SerpAPI
-    similarity.js        char-shingle jaccard + lexical heuristic
-  attestation/
-    minter.js            ERC-721 mint on Base / off-chain fallback
-contracts/
-  GhostWriterAttestation.sol
-scripts/demo.js          offline end-to-end demo
+  config.js              env + service ids + policy
+  agent.js               CAP provider event loop + reconciliation + routing
+  server.js              REST API (/api/verify, /api/lookup, /api/verify/batch)
+  verify.js              shared pipeline (check → mint), batch + bulk
+  lookup.js              on-chain certificate lookup
+  content.js             normalization, hashing, URL/hash input resolution
+  plagiarism/            engine (scoring), websearch (SerpAPI), similarity
+  attestation/minter.js  ERC-721 mint on Base / off-chain fallback
+contracts/GhostWriterAttestation.sol
+scripts/                 demo.js, hire.js, deploy-contract.js
 test/pipeline.test.js    unit tests
 ```
+
+## Configuration (env)
+
+`CROO_SDK_KEY`, `CROO_API_URL`, `CROO_WS_URL`, `GHOSTWRITER_SERVICE_ID`,
+`LOOKUP_SERVICE_ID`, `BULK_SERVICE_ID`, `BASE_RPC_URL`, `ATTESTATION_CONTRACT`,
+`MINTER_PRIVATE_KEY`, `SERPAPI_KEY`, `PORT`, `MIN_CONTENT_LENGTH`, `UNIQUE_THRESHOLD`.
+See `.env.example`.
 
 ## License
 
