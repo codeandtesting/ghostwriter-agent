@@ -19,6 +19,7 @@ function buildMetadata(report, subject) {
       { trait_type: 'Sources Checked', value: report.sources.length },
       { trait_type: 'Kind', value: report.kind },
       { trait_type: 'Checked At', value: report.checkedAt },
+      ...(report.sourceUrl ? [{ trait_type: 'Source URL', value: report.sourceUrl }] : []),
     ],
     ghostwriter: {
       version: '1.0.0',

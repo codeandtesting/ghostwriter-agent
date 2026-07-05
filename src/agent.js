@@ -2,6 +2,7 @@ import { AgentClient, EventType, DeliverableType, NegotiationStatus, OrderStatus
 import { config, assertProviderReady } from './config.js';
 import { verifyContent } from './verify.js';
 import { lookupCertificate } from './lookup.js';
+import { resolveInput } from './content.js';
 
 /**
  * GhostWriter CAP provider.
@@ -14,46 +15,39 @@ import { lookupCertificate } from './lookup.js';
  *      JSON result on-chain.
  *
  * The content to verify is carried in the negotiation's `requirements` string.
- * We support either raw text or a JSON envelope: {"content": "...", "kind":"text"}.
+ * We support raw text, a JSON envelope ({"content"|"text"|"input": "..."}), a
+ * bare URL (the page is fetched), or — for lookup — a bare content hash.
  */
 
-function parseRequirements(requirements) {
-  const raw = (requirements || '').trim();
-  if (!raw) return { content: '', kind: 'text' };
-  try {
-    const obj = JSON.parse(raw);
-    if (obj && typeof obj === 'object') {
-      // Accept several key names: our own `content`, the CROO store UI's `text`,
-      // and a generic `input`. Whichever is present wins.
-      const value = obj.content ?? obj.text ?? obj.input;
-      if (value != null) return { content: String(value), kind: obj.kind || 'text' };
-    }
-  } catch {
-    /* not JSON — treat as raw text */
-  }
-  return { content: raw, kind: 'text' };
-}
-
-/** Accept a pending negotiation (validating content), caching parsed content. */
+/** Accept a pending negotiation (validating input), caching resolved content. */
 async function acceptNegotiation(client, negotiationId, contentByOrder) {
   const negotiation = await client.getNegotiation(negotiationId);
   if (negotiation.status !== NegotiationStatus.Pending) return; // already handled
-  const parsed = parseRequirements(negotiation.requirements);
   const isLookup = negotiation.serviceId && negotiation.serviceId === config.lookupServiceId;
 
-  // Lookup accepts a content hash or short input; the originality check needs
-  // full content.
-  if (!parsed.content || (!isLookup && parsed.content.length < config.minContentLength)) {
+  let resolved;
+  try {
+    resolved = await resolveInput(negotiation.requirements);
+  } catch (e) {
+    await client.rejectNegotiation(negotiationId, `Could not read input: ${e.message || e}`);
+    console.log(`[GhostWriter] rejected negotiation ${negotiationId} (${e.message || e})`);
+    return;
+  }
+
+  // Lookup accepts a content hash or any content; the originality check needs
+  // full content (unless it's a URL we'll fetch).
+  const enough = resolved.isHash || resolved.text.length >= config.minContentLength;
+  if (!resolved.text || (!isLookup && !enough)) {
     await client.rejectNegotiation(
       negotiationId,
-      isLookup ? 'Content or content hash required.' : `Content required, minimum ${config.minContentLength} chars.`
+      isLookup ? 'Content, URL, or content hash required.' : `Content required, minimum ${config.minContentLength} chars.`
     );
     console.log(`[GhostWriter] rejected negotiation ${negotiationId} (insufficient input)`);
     return;
   }
 
   const result = await client.acceptNegotiation(negotiationId);
-  contentByOrder.set(result.order.orderId, parsed);
+  contentByOrder.set(result.order.orderId, resolved);
   console.log(`[GhostWriter] accepted -> order ${result.order.orderId}`);
 }
 
@@ -67,16 +61,16 @@ async function fulfillOrder(client, orderId, contentByOrder) {
   }
 
   const order = await client.getOrder(orderId);
-  let parsed = contentByOrder.get(orderId);
-  if (!parsed) {
+  let resolved = contentByOrder.get(orderId);
+  if (!resolved) {
     const negotiation = await client.getNegotiation(order.negotiationId);
-    parsed = parseRequirements(negotiation.requirements);
+    resolved = await resolveInput(negotiation.requirements);
   }
 
   // Route to the certificate-lookup service if this order is for it.
   if (order.serviceId && order.serviceId === config.lookupServiceId) {
     console.log(`[GhostWriter] order ${orderId} paid — certificate lookup…`);
-    const lookup = await lookupCertificate(parsed.content);
+    const lookup = await lookupCertificate(resolved.text);
     await client.deliverOrder(orderId, {
       deliverableType: DeliverableType.Text,
       deliverableText: JSON.stringify(lookup),
@@ -87,15 +81,17 @@ async function fulfillOrder(client, orderId, contentByOrder) {
   }
 
   console.log(`[GhostWriter] order ${orderId} paid — running check…`);
-  const result = await verifyContent(parsed.content, {
-    kind: parsed.kind,
+  const result = await verifyContent(resolved.text, {
+    kind: resolved.kind,
     subject: order.requesterWalletAddress,
+    sourceUrl: resolved.sourceUrl,
   });
 
   const deliverable = {
     unique: result.unique,
     score: result.score,
     contentHash: result.contentHash,
+    sourceUrl: result.report.sourceUrl,
     attestationTx: result.attestationTx,
     attestation: result.attestation,
     summary: result.report.reportSummary,

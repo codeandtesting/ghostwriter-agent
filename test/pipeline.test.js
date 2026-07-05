@@ -3,6 +3,24 @@ import assert from 'node:assert';
 import { sha256, runPlagiarismCheck } from '../src/plagiarism/engine.js';
 import { jaccard, lexicalOriginality } from '../src/plagiarism/similarity.js';
 import { verifyContent } from '../src/verify.js';
+import { contentHash, normalizeContent, looksLikeHash, looksLikeUrl } from '../src/content.js';
+
+test('normalized hash ignores whitespace/formatting differences', () => {
+  const a = 'The quick brown fox   jumps\n\nover the lazy dog.';
+  const b = '  The quick brown fox jumps over the lazy dog.  ';
+  assert.equal(contentHash(a), contentHash(b));
+});
+
+test('normalizeContent collapses whitespace and trims', () => {
+  assert.equal(normalizeContent('  a\n\t b  '), 'a b');
+});
+
+test('input detectors', () => {
+  assert.ok(looksLikeHash('0x' + 'a'.repeat(64)));
+  assert.ok(!looksLikeHash('0xzz'));
+  assert.ok(looksLikeUrl('https://example.com/x'));
+  assert.ok(!looksLikeUrl('just text'));
+});
 
 const LONG = 'Original sentence number one about navigation and endurance across oceans. '.repeat(6);
 

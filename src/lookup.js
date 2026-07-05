@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
-import { createHash } from 'crypto';
 import { config } from './config.js';
+import { contentHash as computeContentHash, looksLikeHash } from './content.js';
 
 /**
  * Certificate lookup: given a piece of content (or a raw 0x… SHA-256 hash),
@@ -18,15 +18,11 @@ const ABI = [
   'function attestations(uint256) view returns (bytes32 contentHash, uint16 uniquenessScore, uint32 sourcesChecked, uint64 timestamp, address subject)',
 ];
 
-function sha256(text) {
-  return '0x' + createHash('sha256').update(text, 'utf8').digest('hex');
-}
-
 /** Accept either an already-computed 0x… 32-byte hash, or raw content to hash. */
 function toContentHash(input) {
   const raw = (input || '').trim();
-  if (/^0x[0-9a-fA-F]{64}$/.test(raw)) return raw.toLowerCase();
-  return sha256(raw);
+  if (looksLikeHash(raw)) return raw.toLowerCase();
+  return computeContentHash(raw); // normalized, matches the certify side
 }
 
 export async function lookupCertificate(input) {

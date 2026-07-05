@@ -12,8 +12,8 @@ import { mintAttestation } from './attestation/minter.js';
  * @param {boolean}[opts.mint]     whether to mint (default true)
  */
 export async function verifyContent(content, opts = {}) {
-  const { kind = 'text', subject, mint = true } = opts;
-  const report = await runPlagiarismCheck(content, { kind });
+  const { kind = 'text', subject, mint = true, sourceUrl = null } = opts;
+  const report = await runPlagiarismCheck(content, { kind, sourceUrl });
   if (!report.ok) return report;
 
   let attestation = null;

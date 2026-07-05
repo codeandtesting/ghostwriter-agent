@@ -1,11 +1,10 @@
-import { createHash } from 'crypto';
 import { config } from '../config.js';
+import { contentHash as computeContentHash } from '../content.js';
 import { extractProbes, webSearch } from './websearch.js';
 import { jaccard, lexicalOriginality } from './similarity.js';
 
-export function sha256(text) {
-  return '0x' + createHash('sha256').update(text, 'utf8').digest('hex');
-}
+// Backwards-compatible export; hashing is normalized (see src/content.js).
+export const sha256 = computeContentHash;
 
 /**
  * Run an originality check on a piece of content.
@@ -19,9 +18,9 @@ export function sha256(text) {
  *
  * Returns a full provenance report suitable for embedding in an attestation.
  */
-export async function runPlagiarismCheck(content, { kind = 'text' } = {}) {
+export async function runPlagiarismCheck(content, { kind = 'text', sourceUrl = null } = {}) {
   const text = (content || '').trim();
-  const contentHash = sha256(text);
+  const contentHash = computeContentHash(text);
 
   if (text.length < config.minContentLength) {
     return {
@@ -82,6 +81,7 @@ export async function runPlagiarismCheck(content, { kind = 'text' } = {}) {
   return {
     ok: true,
     kind,
+    sourceUrl,
     contentHash,
     uniquenessScore: score,
     unique: score >= config.uniqueThreshold,

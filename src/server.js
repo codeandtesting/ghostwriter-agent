@@ -2,6 +2,7 @@ import express from 'express';
 import { config } from './config.js';
 import { verifyContent, verifyBatch, batchToCsv } from './verify.js';
 import { lookupCertificate } from './lookup.js';
+import { resolveInput } from './content.js';
 
 /**
  * REST surface for direct A2A calls and batch verification. This complements
@@ -17,20 +18,28 @@ export function createServer() {
   });
 
   // Single verification — the core A2A endpoint.
-  // POST /api/verify { content, kind?, subject?, mint? }
+  // POST /api/verify { content | url, kind?, subject?, mint? }
   app.post('/api/verify', async (req, res) => {
     try {
-      const { content, kind = 'text', subject, mint = true } = req.body || {};
-      if (typeof content !== 'string') {
-        return res.status(400).json({ ok: false, error: 'content (string) required' });
+      const { content, url, kind, subject, mint = true } = req.body || {};
+      const raw = url || content;
+      if (typeof raw !== 'string' || !raw.trim()) {
+        return res.status(400).json({ ok: false, error: 'content or url (string) required' });
       }
-      const result = await verifyContent(content, { kind, subject, mint });
+      const resolved = await resolveInput(kind ? JSON.stringify({ content, url, kind }) : raw);
+      const result = await verifyContent(resolved.text, {
+        kind: resolved.kind,
+        subject,
+        mint,
+        sourceUrl: resolved.sourceUrl,
+      });
       if (!result.ok) return res.status(422).json(result);
       res.json({
         ok: true,
         unique: result.unique,
         score: result.score,
         contentHash: result.contentHash,
+        sourceUrl: result.report.sourceUrl,
         attestationTx: result.attestationTx,
         attestation: result.attestation,
         summary: result.report.reportSummary,
@@ -41,17 +50,18 @@ export function createServer() {
     }
   });
 
-  // Certificate lookup — POST /api/lookup { content } or { hash }
-  // Checks whether GhostWriter already certified this exact content, on-chain.
+  // Certificate lookup — POST /api/lookup { content | url | hash }
+  // Checks whether GhostWriter already certified this content, on-chain.
   app.post('/api/lookup', async (req, res) => {
     try {
-      const input = req.body?.hash ?? req.body?.content;
-      if (typeof input !== 'string' || !input.trim()) {
-        return res.status(400).json({ ok: false, error: 'content or hash (string) required' });
+      const raw = req.body?.hash ?? req.body?.url ?? req.body?.content;
+      if (typeof raw !== 'string' || !raw.trim()) {
+        return res.status(400).json({ ok: false, error: 'content, url, or hash (string) required' });
       }
-      const result = await lookupCertificate(input);
+      const resolved = await resolveInput(raw);
+      const result = await lookupCertificate(resolved.text);
       if (!result.ok) return res.status(422).json(result);
-      res.json(result);
+      res.json({ ...result, sourceUrl: resolved.sourceUrl || undefined });
     } catch (e) {
       res.status(500).json({ ok: false, error: String(e.message || e) });
     }
