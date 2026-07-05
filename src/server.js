@@ -1,6 +1,7 @@
 import express from 'express';
 import { config } from './config.js';
 import { verifyContent, verifyBatch, batchToCsv } from './verify.js';
+import { lookupCertificate } from './lookup.js';
 
 /**
  * REST surface for direct A2A calls and batch verification. This complements
@@ -35,6 +36,22 @@ export function createServer() {
         summary: result.report.reportSummary,
         sources: result.report.sources,
       });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: String(e.message || e) });
+    }
+  });
+
+  // Certificate lookup — POST /api/lookup { content } or { hash }
+  // Checks whether GhostWriter already certified this exact content, on-chain.
+  app.post('/api/lookup', async (req, res) => {
+    try {
+      const input = req.body?.hash ?? req.body?.content;
+      if (typeof input !== 'string' || !input.trim()) {
+        return res.status(400).json({ ok: false, error: 'content or hash (string) required' });
+      }
+      const result = await lookupCertificate(input);
+      if (!result.ok) return res.status(422).json(result);
+      res.json(result);
     } catch (e) {
       res.status(500).json({ ok: false, error: String(e.message || e) });
     }

@@ -1,6 +1,7 @@
 import { AgentClient, EventType, DeliverableType, NegotiationStatus, OrderStatus } from '@croo-network/sdk';
 import { config, assertProviderReady } from './config.js';
 import { verifyContent } from './verify.js';
+import { lookupCertificate } from './lookup.js';
 
 /**
  * GhostWriter CAP provider.
@@ -38,13 +39,16 @@ async function acceptNegotiation(client, negotiationId, contentByOrder) {
   const negotiation = await client.getNegotiation(negotiationId);
   if (negotiation.status !== NegotiationStatus.Pending) return; // already handled
   const parsed = parseRequirements(negotiation.requirements);
+  const isLookup = negotiation.serviceId && negotiation.serviceId === config.lookupServiceId;
 
-  if (!parsed.content || parsed.content.length < config.minContentLength) {
+  // Lookup accepts a content hash or short input; the originality check needs
+  // full content.
+  if (!parsed.content || (!isLookup && parsed.content.length < config.minContentLength)) {
     await client.rejectNegotiation(
       negotiationId,
-      `Content required, minimum ${config.minContentLength} chars.`
+      isLookup ? 'Content or content hash required.' : `Content required, minimum ${config.minContentLength} chars.`
     );
-    console.log(`[GhostWriter] rejected negotiation ${negotiationId} (insufficient content)`);
+    console.log(`[GhostWriter] rejected negotiation ${negotiationId} (insufficient input)`);
     return;
   }
 
@@ -67,6 +71,19 @@ async function fulfillOrder(client, orderId, contentByOrder) {
   if (!parsed) {
     const negotiation = await client.getNegotiation(order.negotiationId);
     parsed = parseRequirements(negotiation.requirements);
+  }
+
+  // Route to the certificate-lookup service if this order is for it.
+  if (order.serviceId && order.serviceId === config.lookupServiceId) {
+    console.log(`[GhostWriter] order ${orderId} paid — certificate lookup…`);
+    const lookup = await lookupCertificate(parsed.content);
+    await client.deliverOrder(orderId, {
+      deliverableType: DeliverableType.Text,
+      deliverableText: JSON.stringify(lookup),
+    });
+    contentByOrder.delete(orderId);
+    console.log(`[GhostWriter] delivered lookup ${orderId} — certified=${lookup.certified}`);
+    return;
   }
 
   console.log(`[GhostWriter] order ${orderId} paid — running check…`);

@@ -11,6 +11,8 @@ export const config = {
   crooWsUrl: process.env.CROO_WS_URL || 'wss://api.croo.network/ws',
   crooSdkKey: process.env.CROO_SDK_KEY || '',
   serviceId: process.env.GHOSTWRITER_SERVICE_ID || '',
+  // Optional second service: certificate lookup (verify an existing attestation).
+  lookupServiceId: process.env.LOOKUP_SERVICE_ID || '',
 
   // --- Base chain / attestation ---
   baseRpcUrl: process.env.BASE_RPC_URL || 'https://mainnet.base.org',
