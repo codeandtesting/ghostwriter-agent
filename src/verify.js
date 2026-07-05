@@ -1,5 +1,7 @@
 import { runPlagiarismCheck } from './plagiarism/engine.js';
 import { mintAttestation } from './attestation/minter.js';
+import { contentHash as computeContentHash } from './content.js';
+import { config } from './config.js';
 
 /**
  * Full GhostWriter verification pipeline: check originality, then mint an
@@ -29,6 +31,50 @@ export async function verifyContent(content, opts = {}) {
     report,
     attestation,
     attestationTx: attestation?.attestationTx || null,
+  };
+}
+
+/**
+ * Bulk pack: verify many items in one order. To keep it fast and cheap, items
+ * are checked WITHOUT per-item minting; instead a single "batch" attestation
+ * NFT is minted over the combined fingerprint of all items.
+ */
+export async function verifyBulk(items, { subject } = {}) {
+  const perItem = await verifyBatch(items, { mint: false });
+  const ok = perItem.filter((r) => r.ok);
+  const scores = ok.map((r) => r.score);
+  const avg = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
+  const batchHash = computeContentHash(ok.map((r) => r.contentHash).join('|'));
+
+  // Synthetic report so the existing minter can issue one batch attestation.
+  const report = {
+    kind: 'batch',
+    sourceUrl: null,
+    contentHash: batchHash,
+    uniquenessScore: avg,
+    unique: avg >= config.uniqueThreshold,
+    checkedAt: new Date().toISOString(),
+    sources: [],
+    method: { mode: 'bulk-pack' },
+    reportSummary: `Batch of ${perItem.length} item(s), average uniqueness ${avg}/100.`,
+  };
+  const attestation = await mintAttestation(report, subject);
+
+  return {
+    ok: true,
+    count: perItem.length,
+    averageScore: avg,
+    batchContentHash: batchHash,
+    attestation,
+    attestationTx: attestation?.attestationTx || null,
+    results: perItem.map((r) => ({
+      index: r.index,
+      ok: r.ok,
+      score: r.score,
+      unique: r.unique,
+      contentHash: r.contentHash,
+      error: r.error,
+    })),
   };
 }
 

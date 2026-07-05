@@ -1,8 +1,26 @@
 import { AgentClient, EventType, DeliverableType, NegotiationStatus, OrderStatus } from '@croo-network/sdk';
 import { config, assertProviderReady } from './config.js';
-import { verifyContent } from './verify.js';
+import { verifyContent, verifyBulk } from './verify.js';
 import { lookupCertificate } from './lookup.js';
 import { resolveInput } from './content.js';
+
+/**
+ * Parse a bulk order's requirements into an array of content items. Accepts a
+ * JSON array, {"items":[...]}, or blank-line / newline separated text.
+ */
+function parseBulkItems(requirements) {
+  const t = (requirements || '').trim();
+  try {
+    const o = JSON.parse(t);
+    if (Array.isArray(o)) return o.map(String);
+    if (o && Array.isArray(o.items)) return o.items.map(String);
+  } catch {
+    /* not JSON */
+  }
+  const byBlank = t.split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean);
+  if (byBlank.length > 1) return byBlank;
+  return t ? [t] : [];
+}
 
 /**
  * GhostWriter CAP provider.
@@ -24,6 +42,7 @@ async function acceptNegotiation(client, negotiationId, contentByOrder) {
   const negotiation = await client.getNegotiation(negotiationId);
   if (negotiation.status !== NegotiationStatus.Pending) return; // already handled
   const isLookup = negotiation.serviceId && negotiation.serviceId === config.lookupServiceId;
+  const isBulk = negotiation.serviceId && negotiation.serviceId === config.bulkServiceId;
 
   let resolved;
   try {
@@ -34,10 +53,10 @@ async function acceptNegotiation(client, negotiationId, contentByOrder) {
     return;
   }
 
-  // Lookup accepts a content hash or any content; the originality check needs
-  // full content (unless it's a URL we'll fetch).
+  // Lookup accepts a content hash or any content; bulk accepts a multi-item
+  // blob; the single originality check needs full content (unless URL).
   const enough = resolved.isHash || resolved.text.length >= config.minContentLength;
-  if (!resolved.text || (!isLookup && !enough)) {
+  if (!resolved.text || (!isLookup && !isBulk && !enough)) {
     await client.rejectNegotiation(
       negotiationId,
       isLookup ? 'Content, URL, or content hash required.' : `Content required, minimum ${config.minContentLength} chars.`
@@ -65,6 +84,21 @@ async function fulfillOrder(client, orderId, contentByOrder) {
   if (!resolved) {
     const negotiation = await client.getNegotiation(order.negotiationId);
     resolved = await resolveInput(negotiation.requirements);
+  }
+
+  // Route to the bulk-verification service if this order is for it.
+  if (order.serviceId && order.serviceId === config.bulkServiceId) {
+    const negotiation = await client.getNegotiation(order.negotiationId);
+    const items = parseBulkItems(negotiation.requirements);
+    console.log(`[GhostWriter] order ${orderId} paid — bulk check of ${items.length} item(s)…`);
+    const bulk = await verifyBulk(items, { subject: order.requesterWalletAddress });
+    await client.deliverOrder(orderId, {
+      deliverableType: DeliverableType.Text,
+      deliverableText: JSON.stringify(bulk),
+    });
+    contentByOrder.delete(orderId);
+    console.log(`[GhostWriter] delivered bulk ${orderId} — ${bulk.count} items, avg ${bulk.averageScore}`);
+    return;
   }
 
   // Route to the certificate-lookup service if this order is for it.

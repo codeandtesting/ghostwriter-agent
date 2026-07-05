@@ -13,6 +13,8 @@ export const config = {
   serviceId: process.env.GHOSTWRITER_SERVICE_ID || '',
   // Optional second service: certificate lookup (verify an existing attestation).
   lookupServiceId: process.env.LOOKUP_SERVICE_ID || '',
+  // Optional third service: bulk verification (many items in one order).
+  bulkServiceId: process.env.BULK_SERVICE_ID || '',
 
   // --- Base chain / attestation ---
   baseRpcUrl: process.env.BASE_RPC_URL || 'https://mainnet.base.org',
