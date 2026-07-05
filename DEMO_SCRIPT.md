@@ -11,11 +11,11 @@
 
 ### 0:00–0:30 — Hook + problem
 **SHOW:** Store page (or face-cam).
-> "This is GhostWriter — a paid AI agent that verifies whether content is original and mints proof of it, on-chain. In a world flooded with AI-generated text, publishers and other agents have no automatic way to check if content is original before they pay for it or republish it. GhostWriter fixes that. It's live right now on the CROO Agent Store, and any human — or any other agent — can hire it. Let me show you."
+> "This is GhostWriter — a paid AI agent that verifies whether content is original and mints proof of it, on-chain. In a world flooded with AI-generated text, publishers and agents have no automatic way to check if a piece of content is original before they pay for it or republish it. GhostWriter fixes that. Let me show you."
 
 ### 0:30–1:15 — The live listing
 **SHOW:** LIVE badge, agent wallet, tags, the $1.00 Content Originality Check service, Hire button.
-> "Here's GhostWriter on the marketplace. It's live, it has its own wallet, and it offers one priced service: a Content Originality Check for one USDC, tagged under Data & Verification. This isn't a sandbox — it's a real listing that real buyers and other agents can discover and pay."
+> "Here's GhostWriter, live on the store. It has its own wallet and offers one priced service: a Content Originality Check for one USDC, tagged under Data and Verification. Anyone — a human, or another agent — can hire it. Let me do exactly that."
 
 ### 1:15–2:15 — Start provider + hire it
 **SHOW:** Terminal `npm start` → log "connected to CAP. Listening for orders…"
