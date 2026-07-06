@@ -48,24 +48,29 @@ const stripTags = (h) => decodeEntities(h.replace(/<[^>]+>/g, ' ')).replace(/\s+
  * or footers. Strategy: drop non-content elements, prefer the <article> region,
  * then collect paragraph text; fall back to a full strip if that's too thin.
  */
+const paragraphsIn = (scope) =>
+  [...scope.matchAll(/<p\b[\s\S]*?<\/p>/gi)]
+    .map((m) => stripTags(m[0]))
+    .filter((t) => t.length > 40) // drop menu-item fragments
+    .join('\n\n');
+
 export function extractReadable(html) {
-  let h = html
+  const h = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
     .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
     .replace(/<(nav|header|footer|aside|form)\b[\s\S]*?<\/\1>/gi, ' ');
 
+  // Prefer the <article> region, but fall back to whole-page paragraphs if the
+  // article element is an empty SPA shell (common on JS-rendered news sites).
   const article = h.match(/<article\b[\s\S]*?<\/article>/i);
-  const scope = article ? article[0] : h;
-
-  const paras = [...scope.matchAll(/<p\b[\s\S]*?<\/p>/gi)]
-    .map((m) => stripTags(m[0]))
-    .filter((t) => t.length > 40); // drop menu-item fragments
-
-  let text = paras.join('\n\n');
-  if (text.length < 200) text = stripTags(scope); // fallback for thin/JS pages
-  return text.replace(/\s+/g, ' ').trim();
+  const fromArticle = article ? paragraphsIn(article[0]) : '';
+  const fromPage = paragraphsIn(h);
+  const text = (fromArticle.length >= fromPage.length ? fromArticle : fromPage)
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text;
 }
 
 /** Fetch a web page and extract its readable article text. */
@@ -75,7 +80,13 @@ export async function fetchUrlText(url) {
     headers: { 'user-agent': 'GhostWriter/1.0 (+https://agent.croo.network)' },
   });
   if (!res.ok) throw new Error(`Failed to fetch URL (${res.status})`);
-  return extractReadable(await res.text());
+  const text = extractReadable(await res.text());
+  if (text.length < 200) {
+    throw new Error(
+      'Could not extract enough article text from this URL (the page may be JavaScript-rendered). Paste the article text directly instead.'
+    );
+  }
+  return text;
 }
 
 /**
