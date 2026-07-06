@@ -82,18 +82,22 @@ export async function resolveInput(raw) {
     text = obj.content ?? obj.text ?? obj.input ?? '';
     kind = obj.kind || 'text';
     text = text == null ? '' : String(text);
-  } else if (looksLikeUrl(s)) {
-    sourceUrl = s;
   } else {
     text = s;
   }
+  text = text.trim();
 
-  // A bare hash is passed straight through (lookup-by-hash).
-  if (!obj && looksLikeHash(s)) {
-    return { text: s, sourceUrl: null, kind, isHash: true };
+  // The value itself may be a bare hash or a bare URL — even when the CROO store
+  // wraps it as {"text":"..."}. Detect and handle those.
+  if (looksLikeHash(text)) {
+    return { text, sourceUrl: null, kind, isHash: true };
+  }
+  if (!sourceUrl && looksLikeUrl(text)) {
+    sourceUrl = text;
+    text = '';
   }
 
-  // If we only have a URL, fetch its text.
+  // If we only have a URL, fetch its readable text.
   if (sourceUrl && !text) {
     text = await fetchUrlText(sourceUrl);
   }
