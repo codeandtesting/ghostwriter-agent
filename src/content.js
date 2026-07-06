@@ -30,26 +30,52 @@ const HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 export const looksLikeUrl = (s) => URL_RE.test((s || '').trim());
 export const looksLikeHash = (s) => HASH_RE.test((s || '').trim());
 
-/** Fetch a web page and extract its readable text (best-effort, dependency-free). */
-export async function fetchUrlText(url) {
-  const res = await fetch(url, {
-    signal: AbortSignal.timeout(15000),
-    headers: { 'user-agent': 'GhostWriter/1.0 (+https://agent.croo.network)' },
-  });
-  if (!res.ok) throw new Error(`Failed to fetch URL (${res.status})`);
-  const html = await res.text();
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
+function decodeEntities(s) {
+  return s
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+}
+
+const stripTags = (h) => decodeEntities(h.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+
+/**
+ * Extract the readable *article body* from HTML — not nav bars, menus, headers
+ * or footers. Strategy: drop non-content elements, prefer the <article> region,
+ * then collect paragraph text; fall back to a full strip if that's too thin.
+ */
+export function extractReadable(html) {
+  let h = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
+    .replace(/<(nav|header|footer|aside|form)\b[\s\S]*?<\/\1>/gi, ' ');
+
+  const article = h.match(/<article\b[\s\S]*?<\/article>/i);
+  const scope = article ? article[0] : h;
+
+  const paras = [...scope.matchAll(/<p\b[\s\S]*?<\/p>/gi)]
+    .map((m) => stripTags(m[0]))
+    .filter((t) => t.length > 40); // drop menu-item fragments
+
+  let text = paras.join('\n\n');
+  if (text.length < 200) text = stripTags(scope); // fallback for thin/JS pages
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/** Fetch a web page and extract its readable article text. */
+export async function fetchUrlText(url) {
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(15000),
+    headers: { 'user-agent': 'GhostWriter/1.0 (+https://agent.croo.network)' },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch URL (${res.status})`);
+  return extractReadable(await res.text());
 }
 
 /**

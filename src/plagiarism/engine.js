@@ -6,6 +6,15 @@ import { jaccard, lexicalOriginality } from './similarity.js';
 // Backwards-compatible export; hashing is normalized (see src/content.js).
 export const sha256 = computeContentHash;
 
+/** Hostname of a URL, or null. Used to exclude a page from matching itself. */
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Run an originality check on a piece of content.
  *
@@ -35,6 +44,10 @@ export async function runPlagiarismCheck(content, { kind = 'text', sourceUrl = n
   let webConfigured = false;
   let maxWebOverlap = 0;
 
+  // When checking a URL, its own page (and other pages on the same host) are not
+  // evidence of plagiarism — a page doesn't plagiarize itself.
+  const selfHost = hostOf(sourceUrl);
+
   for (const probe of probes) {
     let hit;
     try {
@@ -44,6 +57,7 @@ export async function runPlagiarismCheck(content, { kind = 'text', sourceUrl = n
     }
     webConfigured = webConfigured || hit.configured;
     for (const r of hit.results) {
+      if (selfHost && hostOf(r.link) === selfHost) continue; // skip the source itself
       const overlap = jaccard(probe, `${r.title}. ${r.snippet}`);
       if (overlap > 0.18) {
         maxWebOverlap = Math.max(maxWebOverlap, overlap);
