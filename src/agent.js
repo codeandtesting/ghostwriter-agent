@@ -70,8 +70,23 @@ async function acceptNegotiation(client, negotiationId, contentByOrder) {
   console.log(`[GhostWriter] accepted -> order ${result.order.orderId}`);
 }
 
-/** Run the check and deliver a paid order. Idempotent: skips if already delivered. */
+// Orders currently being fulfilled, to prevent the OrderPaid event and the
+// reconciliation sweep from processing the same order concurrently (which would
+// broadcast a duplicate mint tx → "already known" error and a refund).
+const inFlight = new Set();
+
+/** Run the check and deliver a paid order. Idempotent + concurrency-safe. */
 async function fulfillOrder(client, orderId, contentByOrder) {
+  if (inFlight.has(orderId)) return; // already being handled in this process
+  inFlight.add(orderId);
+  try {
+    await doFulfillOrder(client, orderId, contentByOrder);
+  } finally {
+    inFlight.delete(orderId);
+  }
+}
+
+async function doFulfillOrder(client, orderId, contentByOrder) {
   // Don't re-deliver an order that already has a delivery.
   const existing = await client.getDelivery(orderId).catch(() => null);
   if (existing && existing.deliverableText) {
