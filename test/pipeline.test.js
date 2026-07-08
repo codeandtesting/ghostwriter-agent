@@ -46,11 +46,10 @@ test('rejects too-short content', async () => {
   assert.match(r.error, /too short/i);
 });
 
-test('verifyContent produces score + attestation for valid content', async () => {
+test('verifyContent produces score + hash for valid content (mint disabled)', async () => {
   const r = await verifyContent(LONG, { subject: '0x1111111111111111111111111111111111111111', mint: false });
   assert.equal(r.ok, true);
   assert.ok(typeof r.score === 'number' && r.score >= 0 && r.score <= 100);
   assert.ok(r.contentHash.startsWith('0x'));
-  assert.ok(r.attestation);
-  assert.ok(r.attestation.signature || r.attestation.attestationTx);
+  assert.equal(r.attestation, null); // mint disabled → no attestation
 });
