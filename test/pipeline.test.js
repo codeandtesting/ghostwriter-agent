@@ -47,7 +47,7 @@ test('rejects too-short content', async () => {
 });
 
 test('verifyContent produces score + attestation for valid content', async () => {
-  const r = await verifyContent(LONG, { subject: '0x1111111111111111111111111111111111111111' });
+  const r = await verifyContent(LONG, { subject: '0x1111111111111111111111111111111111111111', mint: false });
   assert.equal(r.ok, true);
   assert.ok(typeof r.score === 'number' && r.score >= 0 && r.score <= 100);
   assert.ok(r.contentHash.startsWith('0x'));

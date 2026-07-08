@@ -66,9 +66,33 @@ export async function mintAttestation(report, subjectAddress) {
     };
   }
 
-  const provider = new ethers.JsonRpcProvider(config.baseRpcUrl);
-  const wallet = new ethers.Wallet(config.minterPrivateKey, provider);
-  const contract = new ethers.Contract(config.attestationContract, ABI, wallet);
+  // Serialize all on-chain mints (across concurrent orders) so they never
+  // collide on the minter wallet's nonce.
+  return mintQueue(() => doOnChainMint(report, subject, metadata));
+}
+
+// A single managed wallet + a promise-chain mutex ensure sequential nonces even
+// when multiple orders are paid at the same time.
+let sharedContract = null;
+let mintChain = Promise.resolve();
+
+function getContract() {
+  if (!sharedContract) {
+    const provider = new ethers.JsonRpcProvider(config.baseRpcUrl);
+    const wallet = new ethers.NonceManager(new ethers.Wallet(config.minterPrivateKey, provider));
+    sharedContract = new ethers.Contract(config.attestationContract, ABI, wallet);
+  }
+  return sharedContract;
+}
+
+function mintQueue(task) {
+  const run = mintChain.then(task, task); // run regardless of prior outcome
+  mintChain = run.then(() => {}, () => {}); // keep the chain alive on error
+  return run;
+}
+
+async function doOnChainMint(report, subject, metadata) {
+  const contract = getContract();
 
   // In production the metadata JSON would be pinned to IPFS/Arweave first;
   // we embed a data URI so the demo needs no external pinning service.
@@ -97,7 +121,7 @@ export async function mintAttestation(report, subjectAddress) {
     onChain: true,
     attestationTx: receipt.hash,
     tokenId,
-    signer: wallet.address,
+    signer: await contract.runner.getAddress(),
     contract: config.attestationContract,
     metadata,
   };
